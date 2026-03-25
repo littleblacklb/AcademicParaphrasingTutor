@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import OpenAI from 'openai';
-import { SYSTEM_PROMPT, EXTRACTION_PROMPT } from '@/lib/prompts';
+import { SYSTEM_PROMPT, EXTRACTION_PROMPT, DEEP_EXTRACTION_PROMPT } from '@/lib/prompts';
 import { storeKnowledgePointTool } from '@/lib/tools';
 import { addKnowledgePoint, addMessage, touchConversation } from '@/lib/db';
 import type { ChatMessage, StreamEvent } from '@/lib/types';
@@ -138,11 +138,12 @@ async function extractKnowledgePoints(
   assistantReply: string,
   conversationId: string,
   controller: ReadableStreamDefaultController,
+  deep: boolean = false,
 ): Promise<void> {
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     ...conversationMessages,
     { role: 'assistant', content: assistantReply },
-    { role: 'user', content: EXTRACTION_PROMPT },
+    { role: 'user', content: deep ? DEEP_EXTRACTION_PROMPT : EXTRACTION_PROMPT },
   ];
 
   const createOptions: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
@@ -175,9 +176,10 @@ async function extractKnowledgePoints(
 
 export async function POST(request: NextRequest) {
   try {
-    const { messages, conversation_id: conversationId } = (await request.json()) as {
+    const { messages, conversation_id: conversationId, extract_only: extractOnly } = (await request.json()) as {
       messages: ChatMessage[];
       conversation_id: string;
+      extract_only?: boolean;
     };
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -194,10 +196,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Persist the latest user message
-    const lastUserMsg = messages[messages.length - 1];
-    if (lastUserMsg?.role === 'user') {
-      addMessage(conversationId, 'user', lastUserMsg.content);
+    // Persist the latest user message (skip for extract-only mode)
+    if (!extractOnly) {
+      const lastUserMsg = messages[messages.length - 1];
+      if (lastUserMsg?.role === 'user') {
+        addMessage(conversationId, 'user', lastUserMsg.content);
+      }
     }
 
     const client = getClient();
@@ -214,25 +218,39 @@ export async function POST(request: NextRequest) {
     const readable = new ReadableStream({
       async start(controller) {
         try {
-          // Phase 1: Stream text response (no tools — guaranteed text)
-          const assistantContent = await streamChatResponse(
-            client, model, fullMessages, controller,
-          );
-
-          // Persist assistant message
-          if (assistantContent) {
-            addMessage(conversationId, 'assistant', assistantContent);
-            touchConversation(conversationId);
-          }
-
-          // Phase 2: Extract knowledge points via tool calling
-          try {
+          if (extractOnly) {
+            // Extract-only mode: skip chat, run aggressive extraction on existing messages
+            // Find the last assistant message to use as context
+            const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant');
+            if (!lastAssistantMsg) {
+              controller.enqueue(encodeEvent({ type: 'error', message: 'No assistant message to extract from' }));
+              controller.close();
+              return;
+            }
             await extractKnowledgePoints(
-              client, model, fullMessages, assistantContent, conversationId, controller,
+              client, model, fullMessages, lastAssistantMsg.content, conversationId, controller, true,
             );
-          } catch (extractionError) {
-            // Knowledge extraction is best-effort; don't fail the whole response
-            console.error('Knowledge extraction failed:', extractionError);
+          } else {
+            // Phase 1: Stream text response (no tools — guaranteed text)
+            const assistantContent = await streamChatResponse(
+              client, model, fullMessages, controller,
+            );
+
+            // Persist assistant message
+            if (assistantContent) {
+              addMessage(conversationId, 'assistant', assistantContent);
+              touchConversation(conversationId);
+            }
+
+            // Phase 2: Extract knowledge points via tool calling
+            try {
+              await extractKnowledgePoints(
+                client, model, fullMessages, assistantContent, conversationId, controller,
+              );
+            } catch (extractionError) {
+              // Knowledge extraction is best-effort; don't fail the whole response
+              console.error('Knowledge extraction failed:', extractionError);
+            }
           }
 
           controller.enqueue(encodeEvent({ type: 'done' }));

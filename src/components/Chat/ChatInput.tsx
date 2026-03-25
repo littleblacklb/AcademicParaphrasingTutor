@@ -1,13 +1,15 @@
-import { SendHorizonal, Loader2 } from 'lucide-react';
+import { SendHorizonal, Loader2, BookOpen } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 
 interface ChatInputProps {
   onSend: (message: string) => void;
+  onExtract?: () => void;
   isStreaming: boolean;
+  hasMessages: boolean;
 }
 
-export function ChatInput({ onSend, isStreaming }: ChatInputProps) {
+export function ChatInput({ onSend, onExtract, isStreaming, hasMessages }: ChatInputProps) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -51,22 +53,40 @@ export function ChatInput({ onSend, isStreaming }: ChatInputProps) {
           disabled={isStreaming}
           rows={1}
         />
-        <button
-          type="submit"
-          disabled={!input.trim() || isStreaming}
-          className={cn(
-            "p-3 rounded-xl shrink-0 transition-all flex items-center justify-center",
-            input.trim() && !isStreaming
-              ? "bg-blue-500 text-white shadow-md shadow-blue-500/20 hover:bg-blue-600 active:scale-95"
-              : "bg-slate-700/50 text-slate-400 cursor-not-allowed"
+        <div className="flex items-center gap-1.5 shrink-0">
+          {onExtract && hasMessages && (
+            <button
+              type="button"
+              onClick={onExtract}
+              disabled={isStreaming}
+              title="Extract knowledge points from conversation"
+              className={cn(
+                "p-3 rounded-xl transition-all flex items-center justify-center",
+                !isStreaming
+                  ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 active:scale-95"
+                  : "bg-slate-700/50 text-slate-400 cursor-not-allowed"
+              )}
+            >
+              <BookOpen className="w-5 h-5" />
+            </button>
           )}
-        >
-          {isStreaming ? (
-            <Loader2 className="w-5 h-5 animate-spin" />
-          ) : (
-            <SendHorizonal className="w-5 h-5" />
-          )}
-        </button>
+          <button
+            type="submit"
+            disabled={!input.trim() || isStreaming}
+            className={cn(
+              "p-3 rounded-xl shrink-0 transition-all flex items-center justify-center",
+              input.trim() && !isStreaming
+                ? "bg-blue-500 text-white shadow-md shadow-blue-500/20 hover:bg-blue-600 active:scale-95"
+                : "bg-slate-700/50 text-slate-400 cursor-not-allowed"
+            )}
+          >
+            {isStreaming ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <SendHorizonal className="w-5 h-5" />
+            )}
+          </button>
+        </div>
       </form>
     </div>
   );

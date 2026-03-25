@@ -201,6 +201,58 @@ export default function Home() {
     }
   };
 
+  const handleExtract = async () => {
+    if (!selectedConversationId || messages.length === 0 || isStreaming) return;
+    setIsStreaming(true);
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages,
+          conversation_id: selectedConversationId,
+          extract_only: true,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to extract');
+      if (!response.body) throw new Error('No response body');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event: StreamEvent = JSON.parse(line.slice(6));
+
+              if (event.type === 'knowledge_point') {
+                setKnowledgePoints((prev) => [{ id: crypto.randomUUID(), created_at: new Date().toISOString(), in_global_bank: false, ...event.data } as KnowledgePoint, ...prev]);
+                if (window.innerWidth < 1024) setIsSidebarOpen(true);
+              } else if (event.type === 'error') {
+                console.error('Extract error:', event.message);
+              }
+            } catch {
+              // Ignore incomplete JSON chunks
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Extract error:', error);
+    } finally {
+      setIsStreaming(false);
+    }
+  };
+
   const handleDeletePoint = async (id: string) => {
     try {
       const res = await fetch(`/api/knowledge/${id}`, { method: 'DELETE' });
@@ -279,7 +331,7 @@ export default function Home() {
       <div className={`flex flex-col h-full flex-1 transition-all duration-300`}>
         <div className="h-14 lg:hidden shrink-0 border-b border-border/50" /> {/* mobile spacer for toggles */}
         <ChatWindow messages={messages} />
-        <ChatInput onSend={handleSend} isStreaming={isStreaming} />
+        <ChatInput onSend={handleSend} onExtract={handleExtract} isStreaming={isStreaming} hasMessages={messages.length > 0} />
       </div>
 
       {/* Knowledge Bank (Right Pane) */}

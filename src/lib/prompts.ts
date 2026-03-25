@@ -41,3 +41,16 @@ export const EXTRACTION_PROMPT = `Now review the conversation above and extract 
 - A **user mistake** you corrected
 
 Call the \`store_knowledge_point\` tool for EACH knowledge point. Do NOT produce any text — only call the tool.`;
+
+/**
+ * More aggressive extraction prompt used when the user explicitly requests extraction.
+ * Extracts ALL possible knowledge points, not just 1-2.
+ */
+export const DEEP_EXTRACTION_PROMPT = `Carefully review the ENTIRE conversation above and extract ALL valuable knowledge points from the tutor's feedback. Be thorough — extract EVERY instance of:
+- **Synonyms**: every word replacement suggested or that could improve the paraphrase
+- **Collocations**: any phrasal frameworks or word pairings relevant to academic writing
+- **Word form** changes: every noun ↔ verb ↔ adjective transformation mentioned or applicable
+- **Grammar rules**: hedging, voice changes, article usage, tense shifts, etc.
+- **User mistakes**: every correction or error identified
+
+Extract as many knowledge points as you can find (aim for 3-8). Do NOT skip any. Call the \`store_knowledge_point\` tool for EACH knowledge point. Do NOT produce any text — only call the tool.`;
