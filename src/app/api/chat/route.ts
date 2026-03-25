@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import OpenAI from 'openai';
-import { SYSTEM_PROMPT } from '@/lib/prompts';
+import { SYSTEM_PROMPT, EXTRACTION_PROMPT } from '@/lib/prompts';
 import { storeKnowledgePointTool } from '@/lib/tools';
 import { addKnowledgePoint, addMessage, touchConversation } from '@/lib/db';
 import type { ChatMessage, StreamEvent } from '@/lib/types';
@@ -43,7 +43,7 @@ function processToolCalls(
     if (tc.name !== 'store_knowledge_point') continue;
     try {
       let argsRaw = tc.arguments.trim();
-      
+
       // If the model mistakenly concatenated multiple JSON objects (e.g. index collision),
       // we wrap them in an array to parse them correctly.
       if (/}\s*{/.test(argsRaw)) {
@@ -57,7 +57,7 @@ function processToolCalls(
         if (!args.category || !args.original_text || !args.academic_alternative || !args.explanation) {
           continue; // Skip improperly formed objects
         }
-        
+
         const saved = addKnowledgePoint({
           conversation_id: conversationId,
           category: args.category,
@@ -66,7 +66,7 @@ function processToolCalls(
           explanation: args.explanation,
           example_sentence: args.example_sentence,
         });
-        
+
         events.push(
           encodeEvent({
             type: 'knowledge_point',
@@ -87,6 +87,90 @@ function processToolCalls(
   }
 
   return events;
+}
+
+/**
+ * Phase 1: Stream the chat response WITHOUT tools.
+ * This guarantees text output from any provider (including Gemini).
+ */
+async function streamChatResponse(
+  client: OpenAI,
+  model: string,
+  messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  controller: ReadableStreamDefaultController,
+): Promise<string> {
+  const createOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
+    model,
+    messages,
+    stream: true,
+    // No tools — forces the model to produce text
+  };
+
+  if (process.env.AI_THINKING_LEVEL) {
+    createOptions.reasoning_effort = process.env.AI_THINKING_LEVEL as 'low' | 'medium' | 'high';
+  }
+
+  const stream = await client.chat.completions.create(createOptions);
+
+  let assistantContent = '';
+
+  for await (const chunk of stream) {
+    const choice = chunk.choices[0];
+    if (!choice?.delta?.content) continue;
+
+    assistantContent += choice.delta.content;
+    controller.enqueue(
+      encodeEvent({ type: 'text', content: choice.delta.content })
+    );
+  }
+
+  return assistantContent;
+}
+
+/**
+ * Phase 2: Extract knowledge points using tool calls (non-streaming).
+ * Runs after the chat response is complete, with the assistant's reply as context.
+ */
+async function extractKnowledgePoints(
+  client: OpenAI,
+  model: string,
+  conversationMessages: OpenAI.Chat.ChatCompletionMessageParam[],
+  assistantReply: string,
+  conversationId: string,
+  controller: ReadableStreamDefaultController,
+): Promise<void> {
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    ...conversationMessages,
+    { role: 'assistant', content: assistantReply },
+    { role: 'user', content: EXTRACTION_PROMPT },
+  ];
+
+  const createOptions: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
+    model,
+    messages,
+    tools: [storeKnowledgePointTool],
+    stream: false,
+  };
+
+  const response = await client.chat.completions.create(createOptions) as OpenAI.Chat.ChatCompletion;
+
+  const choice = response.choices[0];
+  if (!choice?.message?.tool_calls?.length) return;
+
+  const toolCalls = new Map<number, { name: string; arguments: string }>();
+  for (let i = 0; i < choice.message.tool_calls.length; i++) {
+    const tc = choice.message.tool_calls[i];
+    if (tc.type !== 'function') continue;
+    toolCalls.set(i, {
+      name: tc.function.name,
+      arguments: tc.function.arguments,
+    });
+  }
+
+  const events = processToolCalls(toolCalls, conversationId);
+  for (const ev of events) {
+    controller.enqueue(ev);
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -127,128 +211,28 @@ export async function POST(request: NextRequest) {
       })),
     ];
 
-    const createOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
-      model,
-      messages: fullMessages,
-      tools: [storeKnowledgePointTool],
-      stream: true,
-    };
-
-    if (process.env.AI_THINKING_LEVEL) {
-      createOptions.reasoning_effort = process.env.AI_THINKING_LEVEL as 'low' | 'medium' | 'high';
-    }
-
     const readable = new ReadableStream({
       async start(controller) {
-        async function runTurn(currentMessages: OpenAI.Chat.ChatCompletionMessageParam[]) {
-          const createOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
-            model,
-            messages: currentMessages,
-            tools: [storeKnowledgePointTool],
-            stream: true,
-          };
-
-          if (process.env.AI_THINKING_LEVEL) {
-            createOptions.reasoning_effort = process.env.AI_THINKING_LEVEL as 'low' | 'medium' | 'high';
-          }
-
-          const stream = await client.chat.completions.create(createOptions);
-
-          const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
-          let turnContent = '';
-          let finishReason = '';
-
-          for await (const chunk of stream) {
-            const choice = chunk.choices[0];
-            if (!choice?.delta) continue;
-
-            if (choice.delta.content) {
-              turnContent += choice.delta.content;
-              controller.enqueue(
-                encodeEvent({ type: 'text', content: choice.delta.content })
-              );
-            }
-
-            if (choice.delta.tool_calls) {
-              for (const tc of choice.delta.tool_calls) {
-                const idx = tc.index;
-                if (!toolCalls.has(idx)) {
-                  toolCalls.set(idx, { id: tc.id || '', name: '', arguments: '' });
-                }
-                const existing = toolCalls.get(idx)!;
-                if (tc.id) existing.id = tc.id;
-                if (tc.function?.name) existing.name = tc.function.name;
-                if (tc.function?.arguments) existing.arguments += tc.function.arguments;
-              }
-            }
-
-            if (choice.finish_reason) {
-              finishReason = choice.finish_reason;
-            }
-          }
-
-          return { turnContent, toolCalls, finishReason };
-        }
-
         try {
-          const currentMessages = [...fullMessages];
-          let totalAssistantContent = '';
+          // Phase 1: Stream text response (no tools — guaranteed text)
+          const assistantContent = await streamChatResponse(
+            client, model, fullMessages, controller,
+          );
 
-          while (true) {
-            const { turnContent, toolCalls, finishReason } = await runTurn(currentMessages);
-            totalAssistantContent += turnContent;
-
-            if (toolCalls.size > 0) {
-              const evs = processToolCalls(toolCalls, conversationId);
-              for (const ev of evs) {
-                controller.enqueue(ev);
-              }
-
-              // Assign IDs to any tool calls that are mysteriously missing them
-              for (const [, tc] of toolCalls) {
-                if (!tc.id) tc.id = crypto.randomUUID();
-              }
-
-              // Append assistant message with tool calls
-              currentMessages.push({
-                role: 'assistant',
-                content: turnContent || null,
-                tool_calls: Array.from(toolCalls.values()).map(tc => ({
-                  id: tc.id,
-                  type: 'function',
-                  function: {
-                    name: tc.name,
-                    arguments: tc.arguments
-                  }
-                }))
-              });
-
-              // Append tool responses
-              for (const [, tc] of toolCalls) {
-                currentMessages.push({
-                  role: 'tool',
-                  tool_call_id: tc.id,
-                  content: JSON.stringify({ success: true })
-                });
-              }
-
-              // If it stopped explicitly for tool results OR it didn't give us any text feedback,
-              // we force it to take another turn so the user gets actual feedback!
-              if (finishReason === 'tool_calls' || turnContent.trim().length === 0) {
-                continue; // Run next turn
-              }
-            }
-            break;
+          // Persist assistant message
+          if (assistantContent) {
+            addMessage(conversationId, 'assistant', assistantContent);
+            touchConversation(conversationId);
           }
 
-          if (totalAssistantContent) {
-            addMessage(conversationId, 'assistant', totalAssistantContent);
-            touchConversation(conversationId);
-          } else {
-            const fallbackText = "I've extracted the knowledge points! Check the Knowledge Bank.";
-            controller.enqueue(encodeEvent({ type: 'text', content: fallbackText }));
-            addMessage(conversationId, 'assistant', fallbackText);
-            touchConversation(conversationId);
+          // Phase 2: Extract knowledge points via tool calling
+          try {
+            await extractKnowledgePoints(
+              client, model, fullMessages, assistantContent, conversationId, controller,
+            );
+          } catch (extractionError) {
+            // Knowledge extraction is best-effort; don't fail the whole response
+            console.error('Knowledge extraction failed:', extractionError);
           }
 
           controller.enqueue(encodeEvent({ type: 'done' }));
