@@ -238,11 +238,27 @@ export async function POST(request: NextRequest) {
           controller.enqueue(encodeEvent({ type: 'done' }));
           controller.close();
         } catch (streamError) {
+          // Log full error details for debugging (especially 429 rate-limit errors)
           console.error('Stream error:', streamError);
+          let errorMessage = 'Stream failed';
+          if (streamError instanceof OpenAI.APIError) {
+            console.error('API Error Details:', {
+              status: streamError.status,
+              message: streamError.message,
+              code: streamError.code,
+              type: streamError.type,
+              headers: Object.fromEntries(streamError.headers?.entries?.() ?? []),
+            });
+            errorMessage = `API Error ${streamError.status}: ${streamError.message}` +
+              (streamError.code ? ` (code: ${streamError.code})` : '') +
+              (streamError.type ? ` [type: ${streamError.type}]` : '');
+          } else if (streamError instanceof Error) {
+            errorMessage = streamError.message;
+          }
           controller.enqueue(
             encodeEvent({
               type: 'error',
-              message: streamError instanceof Error ? streamError.message : 'Stream failed',
+              message: errorMessage,
             })
           );
           controller.close();
