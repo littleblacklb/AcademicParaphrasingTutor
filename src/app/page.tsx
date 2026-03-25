@@ -177,7 +177,7 @@ export default function Home() {
                 ]);
               } else if (event.type === 'knowledge_point') {
                 // Add the new knowledge point to the top of the list
-                setKnowledgePoints((prev) => [{ id: crypto.randomUUID(), created_at: new Date().toISOString(), ...event.data } as KnowledgePoint, ...prev]);
+                setKnowledgePoints((prev) => [{ id: crypto.randomUUID(), created_at: new Date().toISOString(), in_global_bank: false, ...event.data } as KnowledgePoint, ...prev]);
                 // On mobile, auto-open sidebar when a point is extracted
                 if (window.innerWidth < 1024) setIsSidebarOpen(true);
               } else if (event.type === 'error') {
@@ -209,6 +209,25 @@ export default function Home() {
       }
     } catch (error) {
       console.error('Failed to delete point:', error);
+    }
+  };
+
+  const handleToggleGlobal = async (id: string) => {
+    const point = knowledgePoints.find((p) => p.id === id);
+    const newValue = point ? !point.in_global_bank : true;
+    try {
+      const res = await fetch(`/api/knowledge/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ in_global_bank: newValue }),
+      });
+      if (res.ok) {
+        setKnowledgePoints((prev) =>
+          prev.map((p) => p.id === id ? { ...p, in_global_bank: newValue } : p)
+        );
+      }
+    } catch (error) {
+      console.error('Failed to toggle global bank:', error);
     }
   };
 
@@ -273,6 +292,7 @@ export default function Home() {
           <Sidebar
             knowledgePoints={knowledgePoints}
             onDeletePoint={handleDeletePoint}
+            onToggleGlobal={handleToggleGlobal}
             conversationId={selectedConversationId}
           />
         </div>

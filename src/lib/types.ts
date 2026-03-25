@@ -15,6 +15,7 @@ export interface KnowledgePoint {
   academic_alternative: string;
   explanation: string;
   example_sentence?: string;
+  in_global_bank: boolean;
   created_at: string; // ISO 8601
 }
 
@@ -46,6 +47,6 @@ export interface StoredMessage {
 
 export type StreamEvent =
   | { type: 'text'; content: string }
-  | { type: 'knowledge_point'; data: Omit<KnowledgePoint, 'id' | 'created_at'> }
+  | { type: 'knowledge_point'; data: Omit<KnowledgePoint, 'id' | 'created_at' | 'in_global_bank'> }
   | { type: 'done' }
   | { type: 'error'; message: string };

@@ -54,6 +54,7 @@ export function getDb(): Database.Database {
       academic_alternative TEXT NOT NULL,
       explanation TEXT NOT NULL,
       example_sentence TEXT,
+      in_global_bank INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -76,6 +77,17 @@ export function getDb(): Database.Database {
           "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('__legacy__', 'Previous Sessions', datetime('now'), datetime('now'))"
         ).run();
       }
+    }
+  } catch {
+    // Table was just created fresh — nothing to migrate
+  }
+
+  // Migration: add in_global_bank if table already exists without it
+  try {
+    const cols2 = db.prepare("PRAGMA table_info(knowledge_points)").all() as { name: string }[];
+    const hasGlobalBank = cols2.some((c) => c.name === 'in_global_bank');
+    if (!hasGlobalBank) {
+      db.exec(`ALTER TABLE knowledge_points ADD COLUMN in_global_bank INTEGER NOT NULL DEFAULT 0`);
     }
   } catch {
     // Table was just created fresh — nothing to migrate
@@ -153,11 +165,11 @@ export function getMessages(conversationId: string): StoredMessage[] {
 
 // ─── Knowledge Point CRUD ─────────────────────────────────────────────
 
-export function getAllKnowledgePoints(category?: KnowledgeCategory, conversationId?: string): KnowledgePoint[] {
+export function getAllKnowledgePoints(category?: KnowledgeCategory, conversationId?: string, globalOnly?: boolean): KnowledgePoint[] {
   const db = getDb();
   let sql = 'SELECT * FROM knowledge_points';
   const conditions: string[] = [];
-  const params: string[] = [];
+  const params: (string | number)[] = [];
 
   if (category) {
     conditions.push('category = ?');
@@ -167,17 +179,21 @@ export function getAllKnowledgePoints(category?: KnowledgeCategory, conversation
     conditions.push('conversation_id = ?');
     params.push(conversationId);
   }
+  if (globalOnly) {
+    conditions.push('in_global_bank = 1');
+  }
   if (conditions.length > 0) {
     sql += ' WHERE ' + conditions.join(' AND ');
   }
   sql += ' ORDER BY created_at DESC';
 
   const stmt = db.prepare(sql);
-  return stmt.all(...params) as KnowledgePoint[];
+  const rows = stmt.all(...params) as (Omit<KnowledgePoint, 'in_global_bank'> & { in_global_bank: number })[];
+  return rows.map((r) => ({ ...r, in_global_bank: !!r.in_global_bank }));
 }
 
 export function addKnowledgePoint(
-  kp: Omit<KnowledgePoint, 'id' | 'created_at'>
+  kp: Omit<KnowledgePoint, 'id' | 'created_at' | 'in_global_bank'>
 ): KnowledgePoint {
   const db = getDb();
   const id = crypto.randomUUID();
@@ -199,13 +215,20 @@ export function addKnowledgePoint(
     created_at
   );
 
-  return { id, created_at, ...kp };
+  return { id, created_at, ...kp, in_global_bank: false };
 }
 
 export function deleteKnowledgePoint(id: string): boolean {
   const db = getDb();
   const stmt = db.prepare('DELETE FROM knowledge_points WHERE id = ?');
   const result = stmt.run(id);
+  return result.changes > 0;
+}
+
+export function toggleGlobalBank(id: string, value: boolean): boolean {
+  const db = getDb();
+  const result = db.prepare('UPDATE knowledge_points SET in_global_bank = ? WHERE id = ?')
+    .run(value ? 1 : 0, id);
   return result.changes > 0;
 }
 

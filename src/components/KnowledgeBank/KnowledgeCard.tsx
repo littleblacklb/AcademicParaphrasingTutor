@@ -1,9 +1,10 @@
-import { BrainCircuit, Languages, BookA, Dna, FileWarning, Trash2 } from 'lucide-react';
+import { BrainCircuit, Languages, BookA, Dna, FileWarning, Trash2, Star } from 'lucide-react';
 import type { KnowledgePoint, KnowledgeCategory } from '@/lib/types';
 
 interface KnowledgeCardProps {
   point: KnowledgePoint;
   onDelete?: (id: string) => void;
+  onToggleGlobal?: (id: string) => void;
 }
 
 const CategoryConfig: Record<
@@ -42,7 +43,7 @@ const CategoryConfig: Record<
   },
 };
 
-export function KnowledgeCard({ point, onDelete }: KnowledgeCardProps) {
+export function KnowledgeCard({ point, onDelete, onToggleGlobal }: KnowledgeCardProps) {
   const config = CategoryConfig[point.category];
 
   return (
@@ -52,15 +53,26 @@ export function KnowledgeCard({ point, onDelete }: KnowledgeCardProps) {
           {config.icon}
           {config.label}
         </div>
-        {onDelete && (
-          <button
-            onClick={() => onDelete(point.id)}
-            className="text-slate-500 hover:text-red-400 p-1 transition-colors"
-            title="Remove idea"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        )}
+        <div className="flex items-center gap-1">
+          {onToggleGlobal && (
+            <button
+              onClick={() => onToggleGlobal(point.id)}
+              className={`p-1 transition-colors ${point.in_global_bank ? 'text-amber-400 hover:text-amber-300' : 'text-slate-500 hover:text-amber-400'}`}
+              title={point.in_global_bank ? 'Remove from Global Bank' : 'Add to Global Bank'}
+            >
+              <Star className="w-4 h-4" fill={point.in_global_bank ? 'currentColor' : 'none'} />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              onClick={() => onDelete(point.id)}
+              className="text-slate-500 hover:text-red-400 p-1 transition-colors"
+              title="Remove idea"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="space-y-3">

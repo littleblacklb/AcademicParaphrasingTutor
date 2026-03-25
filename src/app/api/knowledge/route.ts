@@ -17,13 +17,14 @@ export async function GET(request: NextRequest) {
     const statsParam = searchParams.get('stats');
     const categoryParam = searchParams.get('category') as KnowledgeCategory | null;
     const conversationIdParam = searchParams.get('conversation_id') || undefined;
+    const globalParam = searchParams.get('global') === 'true';
 
     if (statsParam === 'true') {
       const stats = getKnowledgePointStats(conversationIdParam);
       return Response.json(stats);
     }
 
-    const points = getAllKnowledgePoints(categoryParam ?? undefined, conversationIdParam);
+    const points = getAllKnowledgePoints(categoryParam ?? undefined, conversationIdParam, globalParam);
     return Response.json(points);
   } catch (error) {
     console.error('Knowledge GET error:', error);
