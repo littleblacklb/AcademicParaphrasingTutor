@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ChatWindow } from '@/components/Chat/ChatWindow';
 import { ChatInput } from '@/components/Chat/ChatInput';
 import { Sidebar } from '@/components/KnowledgeBank/Sidebar';
@@ -283,6 +283,39 @@ export default function Home() {
     }
   };
 
+  const handleEditPoint = async (id: string, fields: Partial<KnowledgePoint>) => {
+    try {
+      const res = await fetch(`/api/knowledge/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields),
+      });
+      if (res.ok) {
+        setKnowledgePoints((prev) =>
+          prev.map((p) => p.id === id ? { ...p, ...fields } : p)
+        );
+      }
+    } catch (error) {
+      console.error('Failed to edit knowledge point:', error);
+    }
+  };
+
+  // Listen for manual knowledge point additions from the Sidebar
+  const refetchKnowledgePoints = useCallback(() => {
+    if (!selectedConversationId) return;
+    fetch(`/api/knowledge?conversation_id=${selectedConversationId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) setKnowledgePoints(data);
+      })
+      .catch(console.error);
+  }, [selectedConversationId]);
+
+  useEffect(() => {
+    window.addEventListener('knowledge-point-added', refetchKnowledgePoints);
+    return () => window.removeEventListener('knowledge-point-added', refetchKnowledgePoints);
+  }, [refetchKnowledgePoints]);
+
   return (
     <div className="h-full flex relative overflow-hidden">
       {/* Mobile Toggle Buttons */}
@@ -345,6 +378,7 @@ export default function Home() {
             knowledgePoints={knowledgePoints}
             onDeletePoint={handleDeletePoint}
             onToggleGlobal={handleToggleGlobal}
+            onEditPoint={handleEditPoint}
             conversationId={selectedConversationId}
           />
         </div>

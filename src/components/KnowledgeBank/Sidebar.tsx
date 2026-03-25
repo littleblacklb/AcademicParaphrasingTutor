@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { KnowledgeCard } from './KnowledgeCard';
-import { Download, Brain, Search } from 'lucide-react';
+import { Download, Brain, Search, Plus, Check, X } from 'lucide-react';
 import type { KnowledgePoint, KnowledgeCategory } from '@/lib/types';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -10,6 +10,7 @@ interface SidebarProps {
   knowledgePoints: KnowledgePoint[];
   onDeletePoint?: (id: string) => void;
   onToggleGlobal?: (id: string) => void;
+  onEditPoint?: (id: string, fields: Partial<KnowledgePoint>) => void;
   conversationId?: string | null;
 }
 
@@ -22,12 +23,31 @@ const categoryFilters: { value: KnowledgeCategory | 'all'; label: string }[] = [
   { value: 'user_mistake', label: 'Mistakes' },
 ];
 
-export function Sidebar({ knowledgePoints, onDeletePoint, onToggleGlobal, conversationId }: SidebarProps) {
+const categoryOptions: { value: KnowledgeCategory; label: string }[] = [
+  { value: 'synonym', label: 'Synonym' },
+  { value: 'collocation', label: 'Collocation' },
+  { value: 'word_form', label: 'Word Form' },
+  { value: 'grammar_rule', label: 'Grammar Rule' },
+  { value: 'user_mistake', label: 'Correction' },
+];
+
+const inputClass = 'w-full bg-slate-800/70 border border-slate-600/50 rounded-md px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/50';
+
+export function Sidebar({ knowledgePoints, onDeletePoint, onToggleGlobal, onEditPoint, conversationId }: SidebarProps) {
   const [tab, setTab] = useState<Tab>('session');
   const [globalPoints, setGlobalPoints] = useState<KnowledgePoint[]>([]);
   const [globalCategory, setGlobalCategory] = useState<KnowledgeCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingGlobal, setIsLoadingGlobal] = useState(false);
+
+  // Add form state
+  const [isAdding, setIsAdding] = useState(false);
+  const [addCategory, setAddCategory] = useState<KnowledgeCategory>('synonym');
+  const [addOriginal, setAddOriginal] = useState('');
+  const [addAlternative, setAddAlternative] = useState('');
+  const [addExplanation, setAddExplanation] = useState('');
+  const [addExample, setAddExample] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fetchGlobalPoints = useCallback(() => {
     setIsLoadingGlobal(true);
@@ -49,19 +69,66 @@ export function Sidebar({ knowledgePoints, onDeletePoint, onToggleGlobal, conver
 
   const handleToggleGlobal = (id: string) => {
     onToggleGlobal?.(id);
-    // Optimistically update global points list
     setGlobalPoints((prev) => {
       const existing = prev.find((p) => p.id === id);
       if (existing) {
-        // Removing from global bank
         return prev.filter((p) => p.id !== id);
       }
-      // Adding — will appear on next fetch; for now just refetch
       return prev;
     });
-    // Refetch global points after a short delay to sync
     if (tab === 'global') {
       setTimeout(fetchGlobalPoints, 300);
+    }
+  };
+
+  const resetAddForm = () => {
+    setIsAdding(false);
+    setAddCategory('synonym');
+    setAddOriginal('');
+    setAddAlternative('');
+    setAddExplanation('');
+    setAddExample('');
+  };
+
+  const handleAdd = async () => {
+    if (!addOriginal.trim() || !addAlternative.trim() || !addExplanation.trim()) return;
+    setIsSubmitting(true);
+    try {
+      const isGlobalTab = tab === 'global';
+      const body: Record<string, unknown> = {
+        category: addCategory,
+        original_text: addOriginal.trim(),
+        academic_alternative: addAlternative.trim(),
+        explanation: addExplanation.trim(),
+        example_sentence: addExample.trim() || undefined,
+      };
+      if (isGlobalTab) {
+        body.in_global_bank = true;
+      } else if (conversationId) {
+        body.conversation_id = conversationId;
+      }
+
+      const res = await fetch('/api/knowledge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (res.ok) {
+        resetAddForm();
+        if (isGlobalTab) {
+          fetchGlobalPoints();
+        }
+        // Session tab points are managed by parent — trigger a refetch
+        // by dispatching a custom event the parent can listen to
+        if (!isGlobalTab) {
+          window.dispatchEvent(new CustomEvent('knowledge-point-added'));
+        }
+      }
+    } catch (error) {
+      console.error('Failed to add knowledge point:', error);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -79,7 +146,7 @@ export function Sidebar({ knowledgePoints, onDeletePoint, onToggleGlobal, conver
     : `/api/knowledge/export?format=csv`;
 
   return (
-    <div className="h-full flex flex-col bg-slate-900/50 backdrop-blur-xl border-l border-border/50">
+    <div className="h-full flex flex-col bg-slate-900/50 backdrop-blur-xl border-l border-border/50 relative">
       <div className="h-14 px-5 flex items-center justify-between border-b border-border/50 shrink-0">
         <div className="flex items-center gap-2 text-primary font-medium truncate">
           <Brain className="w-5 h-5 text-blue-400 shrink-0" />
@@ -158,11 +225,99 @@ export function Sidebar({ knowledgePoints, onDeletePoint, onToggleGlobal, conver
       )}
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+        {/* Inline add form */}
+        <AnimatePresence>
+          {isAdding && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <div className="p-4 rounded-xl border border-blue-500/30 bg-blue-500/5 backdrop-blur-md space-y-2.5">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold tracking-wider uppercase text-blue-400">New Knowledge Point</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={handleAdd}
+                      disabled={isSubmitting || !addOriginal.trim() || !addAlternative.trim() || !addExplanation.trim()}
+                      className="p-1 text-emerald-400 hover:text-emerald-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Save"
+                    >
+                      <Check className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={resetAddForm}
+                      className="p-1 text-slate-400 hover:text-red-400 transition-colors"
+                      title="Cancel"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Category</label>
+                  <select
+                    value={addCategory}
+                    onChange={(e) => setAddCategory(e.target.value as KnowledgeCategory)}
+                    className="w-full bg-slate-800/70 border border-slate-600/50 rounded-md px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500/50"
+                  >
+                    {categoryOptions.map((c) => (
+                      <option key={c.value} value={c.value}>{c.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Original</label>
+                  <input
+                    type="text"
+                    value={addOriginal}
+                    onChange={(e) => setAddOriginal(e.target.value)}
+                    className={inputClass}
+                    placeholder="Original text..."
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Academic Alternative</label>
+                  <input
+                    type="text"
+                    value={addAlternative}
+                    onChange={(e) => setAddAlternative(e.target.value)}
+                    className={inputClass}
+                    placeholder="Academic alternative..."
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Explanation</label>
+                  <textarea
+                    value={addExplanation}
+                    onChange={(e) => setAddExplanation(e.target.value)}
+                    className={`${inputClass} resize-none`}
+                    rows={2}
+                    placeholder="Explanation..."
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 block">Example (optional)</label>
+                  <input
+                    type="text"
+                    value={addExample}
+                    onChange={(e) => setAddExample(e.target.value)}
+                    className={inputClass}
+                    placeholder="Example sentence..."
+                  />
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {isLoadingGlobal && tab === 'global' ? (
           <div className="flex items-center justify-center pt-12">
             <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
           </div>
-        ) : filteredGlobal.length === 0 ? (
+        ) : filteredGlobal.length === 0 && !isAdding ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-500 space-y-4 pt-12">
             <div className="w-16 h-16 rounded-full bg-slate-800/50 flex items-center justify-center border border-slate-700/50">
               <Brain className="w-6 h-6 text-slate-400" />
@@ -188,12 +343,24 @@ export function Sidebar({ knowledgePoints, onDeletePoint, onToggleGlobal, conver
                   point={kp}
                   onDelete={tab === 'session' ? onDeletePoint : undefined}
                   onToggleGlobal={handleToggleGlobal}
+                  onEdit={onEditPoint}
                 />
               </motion.div>
             ))}
           </AnimatePresence>
         )}
       </div>
+
+      {/* FAB */}
+      {!isAdding && (
+        <button
+          onClick={() => setIsAdding(true)}
+          className="absolute bottom-6 right-6 w-12 h-12 bg-blue-600 hover:bg-blue-500 text-white rounded-full shadow-lg shadow-blue-500/25 flex items-center justify-center transition-all hover:scale-110 active:scale-95 z-10"
+          title="Add knowledge point"
+        >
+          <Plus className="w-5 h-5" />
+        </button>
+      )}
     </div>
   );
 }

@@ -218,6 +218,30 @@ export function addKnowledgePoint(
   return { id, created_at, ...kp, in_global_bank: false };
 }
 
+export function updateKnowledgePoint(
+  id: string,
+  fields: Partial<Pick<KnowledgePoint, 'category' | 'original_text' | 'academic_alternative' | 'explanation' | 'example_sentence'>>
+): boolean {
+  const db = getDb();
+  const setClauses: string[] = [];
+  const params: (string | null)[] = [];
+
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) {
+      setClauses.push(`${key} = ?`);
+      params.push(value ?? null);
+    }
+  }
+
+  if (setClauses.length === 0) return false;
+
+  params.push(id);
+  const result = db.prepare(
+    `UPDATE knowledge_points SET ${setClauses.join(', ')} WHERE id = ?`
+  ).run(...params);
+  return result.changes > 0;
+}
+
 export function deleteKnowledgePoint(id: string): boolean {
   const db = getDb();
   const stmt = db.prepare('DELETE FROM knowledge_points WHERE id = ?');
