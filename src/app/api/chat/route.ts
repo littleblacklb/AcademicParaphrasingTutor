@@ -138,12 +138,11 @@ async function extractKnowledgePoints(
   assistantReply: string,
   conversationId: string,
   controller: ReadableStreamDefaultController,
-  deep: boolean = false,
 ): Promise<void> {
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     ...conversationMessages,
     { role: 'assistant', content: assistantReply },
-    { role: 'user', content: deep ? DEEP_EXTRACTION_PROMPT : EXTRACTION_PROMPT },
+    { role: 'user', content: EXTRACTION_PROMPT },
   ];
 
   const createOptions: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
@@ -219,17 +218,42 @@ export async function POST(request: NextRequest) {
       async start(controller) {
         try {
           if (extractOnly) {
-            // Extract-only mode: skip chat, run aggressive extraction on existing messages
-            // Find the last assistant message to use as context
-            const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant');
-            if (!lastAssistantMsg) {
+            // Extract-only mode: skip chat, run aggressive extraction on the full conversation.
+            // fullMessages already contains all user + assistant turns, so we just append the
+            // extraction prompt directly — no need to duplicate the last assistant message.
+            const hasAssistant = messages.some(m => m.role === 'assistant');
+            if (!hasAssistant) {
               controller.enqueue(encodeEvent({ type: 'error', message: 'No assistant message to extract from' }));
               controller.close();
               return;
             }
-            await extractKnowledgePoints(
-              client, model, fullMessages, lastAssistantMsg.content, conversationId, controller, true,
-            );
+
+            const extractionMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+              ...fullMessages,
+              { role: 'user', content: DEEP_EXTRACTION_PROMPT },
+            ];
+
+            const createOptions: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
+              model,
+              messages: extractionMessages,
+              tools: [storeKnowledgePointTool],
+              stream: false,
+            };
+
+            const response = await client.chat.completions.create(createOptions) as OpenAI.Chat.ChatCompletion;
+            const choice = response.choices[0];
+            if (choice?.message?.tool_calls?.length) {
+              const toolCalls = new Map<number, { name: string; arguments: string }>();
+              for (let i = 0; i < choice.message.tool_calls.length; i++) {
+                const tc = choice.message.tool_calls[i];
+                if (tc.type !== 'function') continue;
+                toolCalls.set(i, { name: tc.function.name, arguments: tc.function.arguments });
+              }
+              const events = processToolCalls(toolCalls, conversationId);
+              for (const ev of events) {
+                controller.enqueue(ev);
+              }
+            }
           } else {
             // Phase 1: Stream text response (no tools — guaranteed text)
             const assistantContent = await streamChatResponse(
