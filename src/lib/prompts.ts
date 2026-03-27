@@ -33,14 +33,14 @@ Be encouraging, specific, and academic. Use a friendly but professional tone. Ce
  * Prompt injected as a follow-up user message after the assistant's reply.
  * Instructs the model to extract knowledge points via tool calls only.
  */
-export const EXTRACTION_PROMPT = `Now review the conversation above and extract 1-2 valuable knowledge points from your feedback. These can be:
-- A **synonym** you suggested or the user could have used
-- A **collocation** or phrasal framework relevant to academic writing
-- A **word form** transformation (noun ↔ verb ↔ adjective)
-- A **grammar rule** (hedging, voice change, article usage, etc.)
-- A **user mistake** you corrected
+export const EXTRACTION_PROMPT = `Review the assistant's feedback above and extract ALL valuable knowledge points. Be thorough — extract EVERY instance of:
+- **Synonyms**: every academic word substitution suggested or that the user could have used
+- **Collocations**: any phrasal frameworks or word pairings relevant to academic writing
+- **Word form** changes: every noun ↔ verb ↔ adjective transformation mentioned or applicable
+- **Grammar rules**: hedging, voice changes, article usage, tense shifts, etc.
+- **User mistakes**: every correction or error identified
 
-Call the \`store_knowledge_point\` tool for EACH knowledge point. Do NOT produce any text — only call the tool.`;
+Aim for 3-8 knowledge points. Do NOT skip any. Call the \`store_knowledge_points\` tool ONCE with ALL points in the items array. Do NOT produce any text — only call the tool.`;
 
 /**
  * More aggressive extraction prompt used when the user explicitly requests extraction.
@@ -53,4 +53,4 @@ export const DEEP_EXTRACTION_PROMPT = `Carefully review the ENTIRE conversation 
 - **Grammar rules**: hedging, voice changes, article usage, tense shifts, etc.
 - **User mistakes**: every correction or error identified
 
-Extract as many knowledge points as you can find (aim for 3-8). Do NOT skip any. Call the \`store_knowledge_point\` tool for EACH knowledge point. Do NOT produce any text — only call the tool.`;
+Extract as many knowledge points as you can find (aim for 3-8). Do NOT skip any. Call the \`store_knowledge_points\` tool ONCE with ALL points in the items array. Do NOT produce any text — only call the tool.`;

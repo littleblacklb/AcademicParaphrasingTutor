@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import { SYSTEM_PROMPT, EXTRACTION_PROMPT, DEEP_EXTRACTION_PROMPT } from '@/lib/prompts';
 import { storeKnowledgePointTool } from '@/lib/tools';
 import { addKnowledgePoint, addMessage, touchConversation } from '@/lib/db';
-import type { ChatMessage, StreamEvent } from '@/lib/types';
+import type { ChatMessage, KnowledgeCategory, StreamEvent } from '@/lib/types';
 
 // Force this route to run in the Node.js runtime (needed for better-sqlite3)
 export const runtime = 'nodejs';
@@ -32,6 +32,37 @@ function encodeEvent(event: StreamEvent): Uint8Array {
   return encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
 }
 
+/** Save a single knowledge point to DB and return the SSE event. */
+function saveKnowledgePoint(
+  args: { category: string; original_text: string; academic_alternative: string; explanation: string; example_sentence?: string },
+  conversationId: string
+): Uint8Array | null {
+  if (!args.category || !args.original_text || !args.academic_alternative || !args.explanation) {
+    return null;
+  }
+
+  const saved = addKnowledgePoint({
+    conversation_id: conversationId,
+    category: args.category as KnowledgeCategory,
+    original_text: args.original_text,
+    academic_alternative: args.academic_alternative,
+    explanation: args.explanation,
+    example_sentence: args.example_sentence,
+  });
+
+  return encodeEvent({
+    type: 'knowledge_point',
+    data: {
+      conversation_id: conversationId,
+      category: saved.category,
+      original_text: saved.original_text,
+      academic_alternative: saved.academic_alternative,
+      explanation: saved.explanation,
+      example_sentence: saved.example_sentence,
+    },
+  });
+}
+
 /** Process all finished tool calls — save to DB and return SSE events. */
 function processToolCalls(
   toolCalls: Map<number, { name: string; arguments: string }>,
@@ -40,46 +71,20 @@ function processToolCalls(
   const events: Uint8Array[] = [];
 
   for (const [, tc] of toolCalls) {
-    if (tc.name !== 'store_knowledge_point') continue;
     try {
-      let argsRaw = tc.arguments.trim();
+      const parsed = JSON.parse(tc.arguments.trim());
 
-      // If the model mistakenly concatenated multiple JSON objects (e.g. index collision),
-      // we wrap them in an array to parse them correctly.
-      if (/}\s*{/.test(argsRaw)) {
-        argsRaw = '[' + argsRaw.replace(/}\s*{/g, '},{') + ']';
-      }
-
-      const parsed = JSON.parse(argsRaw);
-      const argsArray = Array.isArray(parsed) ? parsed : [parsed];
-
-      for (const args of argsArray) {
-        if (!args.category || !args.original_text || !args.academic_alternative || !args.explanation) {
-          continue; // Skip improperly formed objects
+      if (tc.name === 'store_knowledge_points') {
+        // Batch format: { items: [...] }
+        const items = Array.isArray(parsed.items) ? parsed.items : [];
+        for (const item of items) {
+          const ev = saveKnowledgePoint(item, conversationId);
+          if (ev) events.push(ev);
         }
-
-        const saved = addKnowledgePoint({
-          conversation_id: conversationId,
-          category: args.category,
-          original_text: args.original_text,
-          academic_alternative: args.academic_alternative,
-          explanation: args.explanation,
-          example_sentence: args.example_sentence,
-        });
-
-        events.push(
-          encodeEvent({
-            type: 'knowledge_point',
-            data: {
-              conversation_id: conversationId,
-              category: saved.category,
-              original_text: saved.original_text,
-              academic_alternative: saved.academic_alternative,
-              explanation: saved.explanation,
-              example_sentence: saved.example_sentence,
-            },
-          })
-        );
+      } else if (tc.name === 'store_knowledge_point') {
+        // Legacy single-item format (backwards compat)
+        const ev = saveKnowledgePoint(parsed, conversationId);
+        if (ev) events.push(ev);
       }
     } catch (parseError) {
       console.error('Failed to parse tool call arguments:', parseError, '\nRaw arguments:', tc.arguments);
@@ -139,8 +144,13 @@ async function extractKnowledgePoints(
   conversationId: string,
   controller: ReadableStreamDefaultController,
 ): Promise<void> {
+  // Only send the last user message + assistant reply for extraction.
+  // Full conversation history is unnecessary and causes the model to be
+  // conservative with tool calls.
+  const lastUserMsg = conversationMessages.filter(m => m.role === 'user').pop();
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    ...conversationMessages,
+    { role: 'system', content: SYSTEM_PROMPT },
+    ...(lastUserMsg ? [lastUserMsg] : []),
     { role: 'assistant', content: assistantReply },
     { role: 'user', content: EXTRACTION_PROMPT },
   ];
